@@ -34,6 +34,30 @@ aren't valid JSON are still queryable via `_line` (number) and `_raw` (text).
 Output: `-o table` (default), `-o json`, `-o tsv`. Flags may appear before or
 after the query and files.
 
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-o`, `--output` | `table` | output format: `table`, `json`, `tsv` |
+| `--from` | | keep rows with time-field `>=` this bound |
+| `--to` | | keep rows with time-field `<` this bound |
+| `--time-field` | `ts` | field used by `--from`/`--to` |
+| `--color` | `auto` | colorize the level column: `auto`, `always`, `never` |
+
+`--from`/`--to` accept an absolute datetime (`2026-07-02T09:30:00Z`) or a
+relative offset from now (`-1h`, `-15m`, `+30m`, or `now`). They apply a
+`todatetime(<time-field>)` range filter before the rest of the pipeline:
+
+```bash
+klog --from -1h --to now 'summarize count() by service' app.log
+klog --from '2026-07-02T09:00:00Z' --to '2026-07-02T09:05:00Z' 'count' app.log
+klog --time-field Timestamp --from -30m 'where level=="ERROR"' app.log
+```
+
+`--color auto` (the default) colorizes a `level`/`severity` column when stdout is
+a terminal (respecting `NO_COLOR`): ERROR red, FATAL bold-red, WARN yellow, INFO
+green, DEBUG gray, TRACE cyan. JSON/TSV output is never colorized.
+
 ## Tabular operators
 
 | Operator | Example | Notes |

@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -41,7 +42,7 @@ Expressions: arithmetic (+ - * / %%), == != > < >= <= =~ !~, and/or/not,
 Examples:
   klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
   klog 'summarize p95=percentile(ms,95) by service | where p95 > 100' app.log
-  klog 'where todatetime(ts) > ago(1h) | join (dims.log) on service' app.log
+  klog --from -1h --to now 'summarize count() by service' app.log
 
 Flags:
 `
@@ -49,6 +50,10 @@ Flags:
 func main() {
 	out := flag.String("o", "table", "output format: table|json|tsv")
 	flag.StringVar(out, "output", "table", "output format: table|json|tsv")
+	from := flag.String("from", "", "only rows with time-field >= this (datetime or relative, e.g. -1h)")
+	to := flag.String("to", "", "only rows with time-field < this (datetime or relative, e.g. -15m)")
+	timeField := flag.String("time-field", "ts", "field used by --from/--to")
+	color := flag.String("color", "auto", "colorize level column: auto|always|never")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, version)
@@ -71,6 +76,13 @@ func main() {
 	query := args[0]
 	files := args[1:]
 
+	// Prepend a time-range filter stage if --from/--to given.
+	if tf, err := timeFilterStage(*timeField, *from, *to); err != nil {
+		fatal("%v", err)
+	} else if tf != "" {
+		query = tf + " | " + query
+	}
+
 	// Let union/join/lookup read NDJSON files by path.
 	engine.FileLoader = readFileRows
 
@@ -89,8 +101,71 @@ func main() {
 		fatal("run error: %v", err)
 	}
 
-	if err := render(os.Stdout, res, *out); err != nil {
+	colorize := shouldColor(*color, os.Stdout)
+	if err := render(os.Stdout, res, *out, colorize); err != nil {
 		fatal("%v", err)
+	}
+}
+
+// timeFilterStage builds a `where` stage for --from/--to, or "" if neither set.
+func timeFilterStage(field, from, to string) (string, error) {
+	if from == "" && to == "" {
+		return "", nil
+	}
+	if field == "" {
+		return "", fmt.Errorf("--time-field must not be empty")
+	}
+	var clauses []string
+	if from != "" {
+		e, err := timeBoundExpr(from)
+		if err != nil {
+			return "", fmt.Errorf("bad --from: %w", err)
+		}
+		clauses = append(clauses, fmt.Sprintf("todatetime(%s) >= %s", field, e))
+	}
+	if to != "" {
+		e, err := timeBoundExpr(to)
+		if err != nil {
+			return "", fmt.Errorf("bad --to: %w", err)
+		}
+		clauses = append(clauses, fmt.Sprintf("todatetime(%s) < %s", field, e))
+	}
+	return "where " + strings.Join(clauses, " and "), nil
+}
+
+var relTimeRe = regexp.MustCompile(`^([+-]?)(\d+(?:\.\d+)?)(d|h|m|s|ms)$`)
+
+// timeBoundExpr turns a bound into a klog expression: relative offsets like
+// "-1h"/"30m" become ago()/now()+, absolute values become datetime("...").
+func timeBoundExpr(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "now" {
+		return "now()", nil
+	}
+	if m := relTimeRe.FindStringSubmatch(v); m != nil {
+		sign, mag, unit := m[1], m[2], m[3]
+		if sign == "-" {
+			return fmt.Sprintf("ago(%s%s)", mag, unit), nil
+		}
+		return fmt.Sprintf("(now() + %s%s)", mag, unit), nil
+	}
+	// absolute datetime literal (validated by the engine at runtime)
+	return fmt.Sprintf("datetime(%q)", v), nil
+}
+
+// shouldColor decides whether to colorize based on the flag and TTY status.
+func shouldColor(mode string, f *os.File) bool {
+	switch mode {
+	case "always":
+		return true
+	case "never":
+		return false
+	default: // auto
+		if os.Getenv("NO_COLOR") != "" {
+			return false
+		}
+		fi, err := f.Stat()
+		return err == nil && fi.Mode()&os.ModeCharDevice != 0
 	}
 }
 
@@ -103,7 +178,10 @@ func fatal(format string, a ...any) {
 // interspersed with the query and file positionals.
 func splitArgs(argv []string) (flags, positional []string) {
 	// Flags that consume a following value when not given as --flag=value.
-	valueFlags := map[string]bool{"-o": true, "--output": true}
+	valueFlags := map[string]bool{
+		"-o": true, "--output": true,
+		"--from": true, "--to": true, "--time-field": true, "--color": true,
+	}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		if a == "--" {
@@ -201,7 +279,7 @@ func readFileRows(path string) ([]engine.Record, error) {
 	return rows, sc.Err()
 }
 
-func render(w io.Writer, res engine.Result, format string) error {
+func render(w io.Writer, res engine.Result, format string, colorize bool) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(w)
@@ -210,10 +288,59 @@ func render(w io.Writer, res engine.Result, format string) error {
 	case "tsv":
 		return renderDelim(w, res, "\t")
 	case "table":
-		return renderTable(w, res)
+		return renderTable(w, res, colorize)
 	default:
 		return fmt.Errorf("unknown output format %q", format)
 	}
+}
+
+// ---- level colorization ----
+
+const (
+	cReset  = "\x1b[0m"
+	cRed    = "\x1b[31m"
+	cBoldRd = "\x1b[1;31m"
+	cYellow = "\x1b[33m"
+	cGreen  = "\x1b[32m"
+	cGray   = "\x1b[90m"
+	cCyan   = "\x1b[36m"
+)
+
+func isLevelColumn(col string) bool {
+	switch strings.ToLower(col) {
+	case "level", "lvl", "severity", "loglevel", "log_level":
+		return true
+	}
+	return false
+}
+
+func levelColor(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "ERROR", "ERR", "SEVERE", "SEV":
+		return cRed
+	case "FATAL", "CRIT", "CRITICAL", "PANIC", "EMERG", "ALERT":
+		return cBoldRd
+	case "WARN", "WARNING":
+		return cYellow
+	case "INFO", "NOTICE":
+		return cGreen
+	case "DEBUG":
+		return cGray
+	case "TRACE", "VERBOSE":
+		return cCyan
+	}
+	return ""
+}
+
+// colorCell wraps a cell value in a color if it is a recognized level.
+func colorCell(col, raw string, colorize bool) string {
+	if !colorize || !isLevelColumn(col) {
+		return raw
+	}
+	if c := levelColor(raw); c != "" {
+		return c + raw + cReset
+	}
+	return raw
 }
 
 func columns(res engine.Result) []string {
@@ -283,7 +410,7 @@ func renderDelim(w io.Writer, res engine.Result, sep string) error {
 	return nil
 }
 
-func renderTable(w io.Writer, res engine.Result) error {
+func renderTable(w io.Writer, res engine.Result, colorize bool) error {
 	cols := columns(res)
 	if len(cols) == 0 {
 		return nil
@@ -305,22 +432,29 @@ func renderTable(w io.Writer, res engine.Result) error {
 	}
 	bw := bufio.NewWriter(w)
 	defer bw.Flush()
-	writeRow(bw, cols, widths)
+	writeRow(bw, cols, cols, widths, false)
 	seps := make([]string, len(cols))
 	for i := range seps {
 		seps[i] = strings.Repeat("-", widths[i])
 	}
-	writeRow(bw, seps, widths)
+	writeRow(bw, seps, cols, widths, false)
 	for _, row := range cells {
-		writeRow(bw, row, widths)
+		writeRow(bw, row, cols, widths, colorize)
 	}
 	return nil
 }
 
-func writeRow(w io.Writer, vals []string, widths []int) {
+// writeRow pads each cell by its raw (uncolored) length, then optionally
+// applies level coloring so ANSI codes don't disturb column alignment.
+func writeRow(w io.Writer, vals, cols []string, widths []int, colorize bool) {
 	parts := make([]string, len(vals))
 	for i, v := range vals {
-		parts[i] = v + strings.Repeat(" ", widths[i]-len(v))
+		pad := strings.Repeat(" ", widths[i]-len(v))
+		disp := v
+		if colorize && i < len(cols) {
+			disp = colorCell(cols[i], v, true)
+		}
+		parts[i] = disp + pad
 	}
 	fmt.Fprintln(w, strings.Join(parts, "  "))
 }
