@@ -1,0 +1,2 @@
+{"service":"auth","team":"identity","tier":1}
+{"service":"api","team":"gateway","tier":2}

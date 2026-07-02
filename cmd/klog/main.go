@@ -13,7 +13,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -21,21 +21,27 @@ Usage:
   klog [flags] '<query>' [file ...]
   cat app.log | klog '<query>'
 
-Query is a '|'-separated pipeline of operators:
-  where <expr>              keep rows matching a boolean expression
-  project a, b=oldname      select / rename fields
-  summarize <aggs> by <k>   group and aggregate (count,sum,avg,min,max,dcount)
-  sort by <field> [desc]    order rows
-  take <n>                  keep first n rows
-  count                     count rows
+Query is a '|'-separated pipeline of KQL-style operators. Supported:
+  Filter/shape:  where  project  project-away  project-keep  project-rename
+                 project-reorder  extend  parse  mv-expand  distinct
+  Aggregate:     summarize  count  getschema
+  Order/limit:   sort  top  take  sample  sample-distinct  serialize
+  Multi-table:   union  join  lookup   (sources are NDJSON files/subqueries)
+  Constant:      print
 
-Expression operators: == != > < >= <= and or not ( )
-                       contains startswith endswith
+summarize aggregations: count, countif, sum, sumif, avg, avgif, min, max,
+  dcount, make_list, make_set, any, percentile, stdev, stdevp, variance, varp,
+  arg_max, arg_min. Group with 'by <expr>' (e.g. by bin(todatetime(ts), 1h)).
+
+Expressions: arithmetic (+ - * / %%), == != > < >= <= =~ !~, and/or/not,
+  in (...), between (lo .. hi), contains startswith endswith has, matches regex,
+  datetime/timespan literals (1h, 30m, 5s), 50+ scalar functions (strcat, split,
+  substring, iff, case, coalesce, toint, todatetime, ago, now, bin, round, ...).
 
 Examples:
   klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
-  klog 'summarize avg(ms) by service | where avg_ms > 100' app.log
-  klog 'where service=="auth" and ms > 500 | project ts, ms | take 20' app.log
+  klog 'summarize p95=percentile(ms,95) by service | where p95 > 100' app.log
+  klog 'where todatetime(ts) > ago(1h) | join (dims.log) on service' app.log
 
 Flags:
 `
@@ -64,6 +70,9 @@ func main() {
 	}
 	query := args[0]
 	files := args[1:]
+
+	// Let union/join/lookup read NDJSON files by path.
+	engine.FileLoader = readFileRows
 
 	pipe, err := engine.Compile(query)
 	if err != nil {
@@ -165,12 +174,39 @@ func readRows(files []string) ([]engine.Record, error) {
 	return rows, nil
 }
 
+// readFileRows loads a single NDJSON file (used by union/join/lookup).
+func readFileRows(path string) ([]engine.Record, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+	var rows []engine.Record
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err == nil {
+			rows = append(rows, engine.Record(m))
+		} else {
+			rows = append(rows, engine.Record{"_line": float64(lineNo), "_raw": line})
+		}
+	}
+	return rows, sc.Err()
+}
+
 func render(w io.Writer, res engine.Result, format string) error {
 	switch format {
 	case "json":
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(res.Rows)
+		return enc.Encode(displayRows(res.Rows))
 	case "tsv":
 		return renderDelim(w, res, "\t")
 	case "table":
@@ -208,23 +244,28 @@ func cell(r engine.Record, col string) string {
 		return ""
 	case string:
 		return t
-	case float64:
-		if t == float64(int64(t)) {
-			return fmt.Sprintf("%d", int64(t))
-		}
-		return trimFloat(t)
 	case bool:
 		return fmt.Sprintf("%v", t)
-	default:
-		b, _ := json.Marshal(t)
+	case []any, map[string]any:
+		b, _ := json.Marshal(engine.DisplayValue(v))
 		return string(b)
+	default:
+		return engine.Format(v)
 	}
 }
 
-func trimFloat(f float64) string {
-	s := fmt.Sprintf("%.4f", f)
-	s = strings.TrimRight(s, "0")
-	return strings.TrimRight(s, ".")
+// displayRows converts engine-native values (datetime, timespan) to
+// JSON-friendly forms for output.
+func displayRows(rows []engine.Record) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		m := make(map[string]any, len(r))
+		for k, v := range r {
+			m[k] = engine.DisplayValue(v)
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func renderDelim(w io.Writer, res engine.Result, sep string) error {

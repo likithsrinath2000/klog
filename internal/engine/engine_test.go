@@ -132,7 +132,12 @@ func TestProjectRename(t *testing.T) {
 }
 
 func TestSortAscDesc(t *testing.T) {
+	// KQL default sort is descending.
 	res := run(t, `sort by ms | take 1`)
+	if res.Rows[0]["ms"].(float64) != 812 {
+		t.Fatalf("default (desc) sort failed: %v", res.Rows[0])
+	}
+	res = run(t, `sort by ms asc | take 1`)
 	if res.Rows[0]["ms"].(float64) != 40 {
 		t.Fatalf("asc sort failed: %v", res.Rows[0])
 	}
