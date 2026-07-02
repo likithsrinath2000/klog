@@ -1,0 +1,7 @@
+{"ts":"2026-07-02T10:00:01Z","level":"INFO","service":"auth","ms":40,"user":"a"}
+{"ts":"2026-07-02T10:00:02Z","level":"ERROR","service":"auth","ms":812,"user":"b"}
+{"ts":"2026-07-02T10:00:03Z","level":"ERROR","service":"api","ms":150,"user":"a"}
+{"ts":"2026-07-02T10:00:04Z","level":"INFO","service":"api","ms":88,"user":"c"}
+{"ts":"2026-07-02T10:00:05Z","level":"WARN","service":"auth","ms":300,"user":"a"}
+{"ts":"2026-07-02T10:00:06Z","level":"ERROR","service":"api","ms":540,"user":"b"}
+plain non-json line should survive
