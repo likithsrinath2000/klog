@@ -39,6 +39,8 @@ after the query and files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output` | `table` | output format: `table`, `json`, `tsv` |
+| `-i`, `--input` | `json` | input format: `json`, `auto`, `logfmt`, `csv`, `tsv`, `regex`, `raw` |
+| `--pattern` | | regex with named groups for `--input regex` |
 | `--from` | | keep rows with time-field `>=` this bound |
 | `--to` | | keep rows with time-field `<` this bound |
 | `--time-field` | `ts` | field used by `--from`/`--to` |
@@ -57,6 +59,41 @@ klog --time-field Timestamp --from -30m 'where level=="ERROR"' app.log
 `--color auto` (the default) colorizes a `level`/`severity` column when stdout is
 a terminal (respecting `NO_COLOR`): ERROR red, FATAL bold-red, WARN yellow, INFO
 green, DEBUG gray, TRACE cyan. JSON/TSV output is never colorized.
+
+## Input formats
+
+klog reads NDJSON by default, but `-i/--input` handles other log shapes. JSON with
+**varying schemas** already works — columns are the union of keys across rows.
+Lines that don't parse are still queryable via `_raw` and `_line`. Text formats
+auto-upgrade obvious numbers/bools so `where ms > 500` and `summarize avg(ms)`
+work without casts.
+
+| `--input` | Parses | Notes |
+|-----------|--------|-------|
+| `json` (default) | one JSON object per line | non-JSON lines → `_raw` |
+| `auto` | JSON **or** logfmt **or** plain text, per line | best for mixed files |
+| `logfmt` | `key=value key2="quoted val"` | bare keys → `true`; keeps `_raw` |
+| `csv` | comma-separated, first row = header | via `encoding/csv` |
+| `tsv` | tab-separated, first row = header | |
+| `regex` | one line, `--pattern` with `(?P<name>…)` groups | named groups → columns |
+| `raw` | each line as `{_line, _raw}` | grep-style |
+
+```bash
+# logfmt
+klog -i logfmt 'where level=="error" | summarize count() by service' app.logfmt
+
+# CSV with a header row
+klog -i csv 'summarize errs=countif(level=="ERROR") by service' app.csv
+
+# nginx access log via regex named groups
+klog -i regex --pattern '(?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<t>[^]]+)\]\s+"(?P<method>\S+)\s+(?P<path>\S+)[^"]*"\s+(?P<status>\d+)\s+(?P<bytes>\d+)' \
+     'summarize hits=count(), errs=countif(status>=500) by path | sort by hits desc' access.log
+
+# mixed JSON + logfmt + plain text in one file
+klog -i auto 'summarize count() by level' mixed.log
+```
+
+The chosen `--input` also applies to `union`/`join`/`lookup` file sources.
 
 ## Tabular operators
 

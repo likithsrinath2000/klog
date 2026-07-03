@@ -14,7 +14,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -39,9 +39,15 @@ Expressions: arithmetic (+ - * / %%), == != > < >= <= =~ !~, and/or/not,
   datetime/timespan literals (1h, 30m, 5s), 50+ scalar functions (strcat, split,
   substring, iff, case, coalesce, toint, todatetime, ago, now, bin, round, ...).
 
+Input is NDJSON by default. Use -i/--input to parse other formats:
+  json (default), auto (json+logfmt+text), logfmt, csv, tsv,
+  regex (with --pattern '(?P<name>...)'), raw. Lines that don't parse are
+  still queryable via _raw and _line.
+
 Examples:
   klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
-  klog 'summarize p95=percentile(ms,95) by service | where p95 > 100' app.log
+  klog -i logfmt 'where level=="error" | project ts, msg' app.log
+  klog -i regex --pattern '(?P<ip>\S+) \S+ \S+ \[(?P<t>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)' access.log
   klog --from -1h --to now 'summarize count() by service' app.log
 
 Flags:
@@ -54,6 +60,9 @@ func main() {
 	to := flag.String("to", "", "only rows with time-field < this (datetime or relative, e.g. -15m)")
 	timeField := flag.String("time-field", "ts", "field used by --from/--to")
 	color := flag.String("color", "auto", "colorize level column: auto|always|never")
+	input := flag.String("input", "json", "input format: json|auto|logfmt|csv|tsv|regex|raw")
+	flag.StringVar(input, "i", "json", "input format (shorthand)")
+	pattern := flag.String("pattern", "", "regex with named groups for --input regex")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, version)
@@ -83,7 +92,14 @@ func main() {
 		query = tf + " | " + query
 	}
 
-	// Let union/join/lookup read NDJSON files by path.
+	// Select the input parser.
+	pf, err := newParserFactory(*input, *pattern, "")
+	if err != nil {
+		fatal("%v", err)
+	}
+	parserFactoryFn = pf
+
+	// Let union/join/lookup read files by path (same input format).
 	engine.FileLoader = readFileRows
 
 	pipe, err := engine.Compile(query)
@@ -181,6 +197,7 @@ func splitArgs(argv []string) (flags, positional []string) {
 	valueFlags := map[string]bool{
 		"-o": true, "--output": true,
 		"--from": true, "--to": true, "--time-field": true, "--color": true,
+		"-i": true, "--input": true, "--pattern": true,
 	}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -199,6 +216,28 @@ func splitArgs(argv []string) (flags, positional []string) {
 		positional = append(positional, a)
 	}
 	return flags, positional
+}
+
+// parserFactoryFn builds a fresh line parser per input stream. Set in main
+// from the --input/--pattern flags; used by readRows and readFileRows.
+var parserFactoryFn = func() rowParser { return parseJSONLine }
+
+func scanRows(r io.Reader, rows *[]engine.Record) error {
+	parse := parserFactoryFn()
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	n := 0
+	for sc.Scan() {
+		n++
+		line := strings.TrimRight(sc.Text(), "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if rec, ok := parse(line, n); ok {
+			*rows = append(*rows, rec)
+		}
+	}
+	return sc.Err()
 }
 
 func readRows(files []string) ([]engine.Record, error) {
@@ -227,32 +266,16 @@ func readRows(files []string) ([]engine.Record, error) {
 	}()
 
 	var rows []engine.Record
-	lineNo := 0
 	for _, r := range readers {
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-		for sc.Scan() {
-			lineNo++
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			var m map[string]any
-			if err := json.Unmarshal([]byte(line), &m); err == nil {
-				rows = append(rows, engine.Record(m))
-			} else {
-				// Non-JSON line: expose raw text so it's still queryable.
-				rows = append(rows, engine.Record{"_line": float64(lineNo), "_raw": line})
-			}
-		}
-		if err := sc.Err(); err != nil {
+		if err := scanRows(r, &rows); err != nil {
 			return nil, err
 		}
 	}
 	return rows, nil
 }
 
-// readFileRows loads a single NDJSON file (used by union/join/lookup).
+// readFileRows loads a single file (used by union/join/lookup), honoring the
+// selected input format.
 func readFileRows(path string) ([]engine.Record, error) {
 	fh, err := os.Open(path)
 	if err != nil {
@@ -260,23 +283,10 @@ func readFileRows(path string) ([]engine.Record, error) {
 	}
 	defer fh.Close()
 	var rows []engine.Record
-	sc := bufio.NewScanner(fh)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	lineNo := 0
-	for sc.Scan() {
-		lineNo++
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(line), &m); err == nil {
-			rows = append(rows, engine.Record(m))
-		} else {
-			rows = append(rows, engine.Record{"_line": float64(lineNo), "_raw": line})
-		}
+	if err := scanRows(fh, &rows); err != nil {
+		return nil, err
 	}
-	return rows, sc.Err()
+	return rows, nil
 }
 
 func render(w io.Writer, res engine.Result, format string, colorize bool) error {

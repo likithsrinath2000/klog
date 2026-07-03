@@ -45,6 +45,10 @@ titles=(
   "TSV output"
   "stdin pipe + round via extend"
   "Non-JSON lines survive as _raw"
+  "logfmt input (-i logfmt)"
+  "CSV input (-i csv)"
+  "regex input: nginx access log (-i regex --pattern ...)"
+  "auto input: mixed JSON + logfmt + text (-i auto)"
 )
 
 # Format per entry: "FLAGS>>>QUERY"  (FLAGS may be empty; STDIN as flags = pipe)
@@ -69,21 +73,28 @@ specs=(
   '-o tsv>>>summarize n=count() by service | sort by n desc'
   'STDIN>>>where service=="cache" | summarize avg_ms=avg(ms) | extend avg_ms=round(avg_ms,2)'
   '>>>where isnotempty(_raw) | project _line, _raw'
+  '-i logfmt>>>where level=="error" | summarize n=count(), avg_ms=avg(ms) by service>>>sample/app.logfmt'
+  '-i csv>>>summarize errs=countif(level=="ERROR"), maxms=max(ms) by service | sort by maxms desc>>>sample/app.csv'
+  '-i regex --pattern (?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<t>[^]]+)\]\s+"(?P<method>\S+)\s+(?P<path>\S+)[^"]*"\s+(?P<status>\d+)\s+(?P<bytes>\d+)>>>summarize hits=count(), errs=countif(status>=500), bytes=sum(bytes) by path | sort by hits desc>>>sample/access.txt'
+  '-i auto>>>summarize n=count() by level>>>sample/mixed.log.txt'
 )
 
 run_step() {
   local i=$1
   local spec="${specs[$i]}"
   local flags="${spec%%>>>*}"
-  local q="${spec#*>>>}"
+  local rest="${spec#*>>>}"
+  local q="${rest%%>>>*}"
+  local file="$APP"
+  [[ "$rest" == *">>>"* ]] && file="${rest##*>>>}"
   printf '\n%s[%2d] %s%s\n' "$bold" "$((i+1))" "${titles[$i]}" "$reset"
   if [[ "$flags" == "STDIN" ]]; then
-    printf '%s  cat %s | klog '\''%s'\''%s\n' "$cyan" "$APP" "$q" "$reset"
-    "$BIN" "$q" < "$APP"
+    printf '%s  cat %s | klog '\''%s'\''%s\n' "$cyan" "$file" "$q" "$reset"
+    "$BIN" "$q" < "$file"
   else
-    printf '%s  klog %s '\''%s'\'' %s%s\n' "$cyan" "$flags" "$q" "$APP" "$reset"
+    printf '%s  klog %s '\''%s'\'' %s%s\n' "$cyan" "$flags" "$q" "$file" "$reset"
     # shellcheck disable=SC2086
-    "$BIN" $flags "$q" "$APP"
+    "$BIN" $flags "$q" "$file"
   fi
 }
 

@@ -1,0 +1,6 @@
+ts=2026-07-03T04:00:01Z level=info service=auth msg="login ok" ms=42 user=alice
+ts=2026-07-03T04:00:02Z level=error service=payments msg="charge failed" ms=812 user=bob
+ts=2026-07-03T04:00:03Z level=warn service=api msg="slow response" ms=350 user=alice
+ts=2026-07-03T04:00:04Z level=error service=payments msg="timeout" ms=1200 user=carol
+ts=2026-07-03T04:00:05Z level=info service=search msg="query" ms=88 user=dave
+==== application restarted ====

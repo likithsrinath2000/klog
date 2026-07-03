@@ -1,0 +1,4 @@
+{"ts":"2026-07-03T04:00:01Z","level":"INFO","service":"auth","ms":40}
+level=error service=payments ms=812 msg="charge failed"
+==== application restarted ====
+{"ts":"2026-07-03T04:00:03Z","level":"ERROR","service":"api","ms":500}
