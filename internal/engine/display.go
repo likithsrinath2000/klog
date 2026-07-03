@@ -11,6 +11,9 @@ func ParseTime(v any) (time.Time, bool) { return toTime(v) }
 // Field resolves a possibly dotted key path against a record.
 func Field(r Record, key string) (any, bool) { return getField(r, key) }
 
+// Number coerces a value to float64, reporting success (parses numeric strings).
+func Number(v any) (float64, bool) { return toNumber(v) }
+
 // DisplayValue converts engine-native values (datetime, timespan) into
 // JSON-friendly representations for output.
 func DisplayValue(v any) any {

@@ -10,8 +10,9 @@ import (
 
 // Result carries rows plus an optional explicit column order for display.
 type Result struct {
-	Rows []Record
-	Cols []string // nil => infer union of keys
+	Rows  []Record
+	Cols  []string   // nil => infer union of keys
+	Chart *ChartSpec // non-nil when a `render` stage requested a chart
 }
 
 // operator transforms a Result.
@@ -245,6 +246,8 @@ func compileStage(s string) (operator, error) {
 		return compileJoin(rest)
 	case "lookup":
 		return compileLookup(rest)
+	case "render":
+		return compileRender(rest)
 	}
 	return nil, fmt.Errorf("unknown operator %q", kw)
 }

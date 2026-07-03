@@ -152,6 +152,7 @@ shape the output afterwards.
 | `union` | `union other.log` | append rows from files/subqueries |
 | `join` | `join kind=inner (dims.log) on service` | relational join |
 | `lookup` | `lookup (dims.log) on service` | dimension enrichment (left) |
+| `render` | `... \| render barchart` | terminal chart (bar/pie/line/time) |
 
 `join` kinds: `inner`, `leftouter`, `rightouter`, `fullouter`, `leftsemi`,
 `rightsemi`, `leftanti`, `rightanti`. Right-side sources are NDJSON files, or a
@@ -229,11 +230,34 @@ klog 'parse msg with "user=" user " ip=" ip | distinct user, ip' app.log
 journalctl -o json -f | klog 'where _SYSTEMD_UNIT=="nginx.service" | project MESSAGE'
 ```
 
+## Charts
+
+`render` draws terminal charts. Your query produces a table; `render` turns it
+into bars or a line plot (Unicode, scaled to your terminal width).
+
+| Chart | Rendering |
+|-------|-----------|
+| `render barchart` / `columnchart` | horizontal Unicode bars with values |
+| `render piechart` | bars annotated with each slice's `%` |
+| `render timechart` / `linechart` / `areachart` / `scatterchart` | ASCII line plot, multi-series with a legend |
+
+By default the first column is the x-axis and every numeric column is a series.
+Override via `with (...)`:
+
+```bash
+klog 'where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render barchart' app.log
+klog 'summarize n=count() by level | render piechart with (title="Level mix")' app.log
+klog 'extend t=todatetime(ts) | summarize hits=count(), errors=countif(level=="ERROR") by bin(t,1m) | render timechart' app.log
+```
+
+`with` options: `title`, `xcolumn`, `ycolumns` (`;`-separated), `kind`. Charts
+render in table mode; `-o json/ndjson/tsv` emit the underlying data instead.
+
 ## Not (yet) supported
 
-Operators tied to the ADX service rather than local files: chart `render`,
-`make-series`, `evaluate <plugin>`, geospatial/ML functions, and cluster/database
-management. Contributions welcome.
+Operators tied to the ADX service rather than local files: `make-series`,
+`evaluate <plugin>`, geospatial/ML functions, and cluster/database management.
+Contributions welcome.
 
 ## Develop
 

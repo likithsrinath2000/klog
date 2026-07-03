@@ -51,6 +51,9 @@ titles=(
   "auto input: mixed JSON + logfmt + text (-i auto)"
   "Context: +/- 2 lines around slowest ERROR (grep -C style)"
   "Context: +/- 3s time window around slowest request"
+  "Chart: errors per service (render barchart)"
+  "Chart: log level mix (render piechart)"
+  "Chart: requests per minute (render timechart)"
 )
 
 # Format per entry: "FLAGS>>>QUERY"  (FLAGS may be empty; STDIN as flags = pipe)
@@ -81,6 +84,9 @@ specs=(
   '-i auto>>>summarize n=count() by level>>>sample/mixed.log.txt'
   '-C 2>>>where level=="ERROR" and ms > 5000'
   '-T 3s>>>where ms > 5000'
+  '>>>where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render barchart'
+  '>>>summarize n=count() by level | render piechart with (title="Level mix")'
+  '>>>extend t=todatetime(ts) | where isnotempty(ts) | summarize hits=count() by minute=bin(t,1m) | sort by minute asc | render timechart'
 )
 
 run_step() {

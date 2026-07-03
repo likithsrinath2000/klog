@@ -14,7 +14,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.5.0"
+var version = "0.6.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -28,6 +28,7 @@ Query is a '|'-separated pipeline of KQL-style operators. Supported:
   Aggregate:     summarize  count  getschema
   Order/limit:   sort  top  take  sample  sample-distinct  serialize
   Multi-table:   union  join  lookup   (sources are NDJSON files/subqueries)
+  Charts:        render barchart|columnchart|piechart|timechart|linechart
   Constant:      print
 
 summarize aggregations: count, countif, sum, sumif, avg, avgif, min, max,
@@ -165,6 +166,14 @@ func main() {
 			return
 		}
 		res = cres
+	}
+
+	// A `render` stage draws a chart in table mode; other formats emit the data.
+	if res.Chart != nil && *out == "table" && res.Chart.Kind != "table" {
+		if err := renderChart(res, colorize); err != nil {
+			fatal("%v", err)
+		}
+		return
 	}
 
 	if err := render(os.Stdout, res, *out, colorize); err != nil {
