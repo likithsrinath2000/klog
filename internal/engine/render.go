@@ -7,10 +7,11 @@ import (
 
 // ChartSpec describes a requested chart. The CLI turns it into terminal output.
 type ChartSpec struct {
-	Kind  string   // bar | column | pie | line | time | area | scatter
+	Kind  string   // bar | column | pie | line | time | area | scatter | histogram
 	Title string   // optional title
 	XCol  string   // x-axis column ("" => first column)
 	YCols []string // y series ("" => all numeric columns except XCol)
+	Bins  int      // histogram bin count (0 => default)
 }
 
 type renderOp struct{ spec *ChartSpec }
@@ -51,6 +52,8 @@ func compileRender(rest string) (operator, error) {
 					if nk, err := normalizeChartKind(v); err == nil {
 						spec.Kind = nk
 					}
+				case "bins":
+					fmt.Sscanf(strings.TrimSpace(v), "%d", &spec.Bins)
 				}
 			}
 		} else {
@@ -78,6 +81,8 @@ func normalizeChartKind(k string) (string, error) {
 		return "scatter", nil
 	case "table":
 		return "table", nil
+	case "histogram", "hist":
+		return "histogram", nil
 	}
 	return "", fmt.Errorf("unknown chart kind %q", k)
 }

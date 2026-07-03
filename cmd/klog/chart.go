@@ -39,18 +39,33 @@ func renderChart(res engine.Result, colorize bool) error {
 	if xcol == "" {
 		xcol = cols[0]
 	}
+
+	bw := bufio.NewWriter(os.Stdout)
+	defer bw.Flush()
+	if spec.Title != "" {
+		fmt.Fprintf(bw, "%s\n", spec.Title)
+	}
+
+	// Histogram bins one numeric column, so it is handled before y-series logic.
+	if spec.Kind == "histogram" {
+		col := spec.XCol
+		if _, ok := firstNumeric(res.Rows, col); col == "" || !ok {
+			if nc := numericColumns(res.Rows, cols, ""); len(nc) > 0 {
+				col = nc[0]
+			}
+		}
+		if col == "" {
+			return fmt.Errorf("render histogram: no numeric column found")
+		}
+		return histChart(bw, res.Rows, col, spec.Bins)
+	}
+
 	ycols := spec.YCols
 	if len(ycols) == 0 {
 		ycols = numericColumns(res.Rows, cols, xcol)
 	}
 	if len(ycols) == 0 {
 		return fmt.Errorf("render %s: no numeric y column found", spec.Kind)
-	}
-
-	bw := bufio.NewWriter(os.Stdout)
-	defer bw.Flush()
-	if spec.Title != "" {
-		fmt.Fprintf(bw, "%s\n", spec.Title)
 	}
 
 	switch spec.Kind {
@@ -95,6 +110,19 @@ func numAt(r engine.Record, col string) (float64, bool) {
 	return 0, false
 }
 
+// firstNumeric reports whether a column has any numeric value.
+func firstNumeric(rows []engine.Record, col string) (float64, bool) {
+	if col == "" {
+		return 0, false
+	}
+	for _, r := range rows {
+		if v, ok := numAt(r, col); ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
 // ---- bar / column / pie ----
 
 var blocks = []rune("▏▎▍▌▋▊▉█")
@@ -130,6 +158,11 @@ func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string
 	if len(bars) == 0 {
 		return fmt.Errorf("no data")
 	}
+	return drawHBars(w, bars)
+}
+
+// drawHBars renders a horizontal bar chart from label/value pairs.
+func drawHBars(w *bufio.Writer, bars []labeledVal) error {
 	maxVal, labelW, valW := 0.0, 0, 0
 	for _, b := range bars {
 		if b.val > maxVal {
@@ -156,7 +189,7 @@ func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string
 		barArea = 10
 	}
 	for _, b := range bars {
-		fmt.Fprintf(w, "%-*s │ %s %*s\n",
+		fmt.Fprintf(w, "%-*s | %s %*s\n",
 			labelW, truncate(b.label, labelW), scaledBar(b.val, maxVal, barArea), valW, fmtNum(b.val))
 	}
 	return nil
@@ -179,62 +212,130 @@ func scaledBar(val, maxVal float64, area int) string {
 	return b.String()
 }
 
-// columnChart draws vertical bars with an indexed legend below.
+// columnChart draws vertical bars with each value printed above its bar and an
+// indexed legend below.
 func columnChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string) error {
 	bars := flattenBars(rows, xcol, ycols)
 	if len(bars) == 0 {
 		return fmt.Errorf("no data")
 	}
-	maxVal := 0.0
+	maxVal, valW := 0.0, 1
 	for _, b := range bars {
 		if b.val > maxVal {
 			maxVal = b.val
+		}
+		if l := len(fmtNum(b.val)); l > valW {
+			valW = l
 		}
 	}
 	if maxVal <= 0 {
 		maxVal = 1
 	}
-	const height = 12
-	const cw = 3 // column cell width ("██ ")
-	// cap columns to fit width
-	maxCols := (termWidth() - 8) / cw
+
+	const height = 12 // rows for bars (a value row sits above)
+	cw := valW + 1    // column width fits the value label
+	if cw < 3 {
+		cw = 3
+	}
+	maxCols := (termWidth() - 6) / cw
 	if maxCols < 1 {
 		maxCols = 1
 	}
 	if len(bars) > maxCols {
 		bars = bars[:maxCols]
 	}
-	axW := len(fmtNum(maxVal))
-	for lvl := height; lvl >= 1; lvl-- {
-		var lbl string
-		if lvl == height {
-			lbl = fmtNum(maxVal)
+
+	width := len(bars) * cw
+	// canvas: one value row on top + height bar rows
+	canvas := make([][]rune, height+1)
+	for i := range canvas {
+		canvas[i] = []rune(strings.Repeat(" ", width))
+	}
+	put := func(row, col int, s string) {
+		for _, r := range s {
+			if col >= 0 && col < width && row >= 0 && row < len(canvas) {
+				canvas[row][col] = r
+			}
+			col++
 		}
-		fmt.Fprintf(w, "%*s ┤", axW, lbl)
-		for _, b := range bars {
-			h := int(math.Round(b.val / maxVal * float64(height)))
-			if h >= lvl {
-				w.WriteString("██ ")
-			} else {
-				w.WriteString("   ")
+	}
+	for i, b := range bars {
+		colStart := i * cw
+		bh := int(math.Round(b.val / maxVal * float64(height)))
+		if bh < 1 && b.val > 0 {
+			bh = 1
+		}
+		for k := 0; k < bh; k++ {
+			row := height - k // rows 1..height are bars; row 0 is labels
+			canvas[row][colStart] = '█'
+			if colStart+1 < width {
+				canvas[row][colStart+1] = '█'
 			}
 		}
-		w.WriteByte('\n')
+		put(height-bh, colStart, fmtNum(b.val)) // value directly above the bar
 	}
-	fmt.Fprintf(w, "%*s └", axW, "0")
-	fmt.Fprint(w, strings.Repeat("─", len(bars)*cw))
-	w.WriteByte('\n')
-	// index row
-	fmt.Fprintf(w, "%*s  ", axW, "")
+
+	axGap := strings.Repeat(" ", 2)
+	for _, line := range canvas {
+		fmt.Fprintf(w, "%s|%s\n", axGap, string(line))
+	}
+	fmt.Fprintf(w, "%s+%s\n", axGap, strings.Repeat("─", width))
+	// index row under each column
+	fmt.Fprintf(w, "%s ", axGap)
 	for i := range bars {
-		fmt.Fprintf(w, "%-3d", (i+1)%100)
+		fmt.Fprintf(w, "%-*d", cw, (i+1)%100)
 	}
 	w.WriteByte('\n')
-	// legend
 	for i, b := range bars {
 		fmt.Fprintf(w, "  %d) %s = %s\n", i+1, b.label, fmtNum(b.val))
 	}
 	return nil
+}
+
+// histChart buckets a numeric column into bins and draws horizontal bars.
+func histChart(w *bufio.Writer, rows []engine.Record, col string, bins int) error {
+	var vals []float64
+	minV, maxV := math.Inf(1), math.Inf(-1)
+	for _, r := range rows {
+		if v, ok := numAt(r, col); ok {
+			vals = append(vals, v)
+			minV = math.Min(minV, v)
+			maxV = math.Max(maxV, v)
+		}
+	}
+	if len(vals) == 0 {
+		return fmt.Errorf("render histogram: column %q has no numeric values", col)
+	}
+	if bins <= 0 {
+		bins = 10
+	}
+	if minV == maxV {
+		fmt.Fprintf(w, "%s | %s %d\n", fmtNum(minV), strings.Repeat("█", 20), len(vals))
+		return nil
+	}
+	span := maxV - minV
+	binW := span / float64(bins)
+	counts := make([]int, bins)
+	for _, v := range vals {
+		idx := int((v - minV) / binW)
+		if idx >= bins {
+			idx = bins - 1
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		counts[idx]++
+	}
+	bars := make([]labeledVal, bins)
+	for i := 0; i < bins; i++ {
+		lo := minV + float64(i)*binW
+		hi := lo + binW
+		bars[i] = labeledVal{
+			label: fmt.Sprintf("%s..%s", fmtNum(lo), fmtNum(hi)),
+			val:   float64(counts[i]),
+		}
+	}
+	return drawHBars(w, bars)
 }
 
 var pieColors = []string{

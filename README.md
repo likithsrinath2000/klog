@@ -63,7 +63,7 @@ green, DEBUG gray, TRACE cyan. JSON/TSV output is never colorized.
 ## Input formats
 
 klog reads NDJSON by default, but `-i/--input` handles other log shapes. JSON with
-**varying schemas** already works — columns are the union of keys across rows.
+**varying schemas** already works: columns are the union of keys across rows.
 Lines that don't parse are still queryable via `_raw` and `_line`. Text formats
 auto-upgrade obvious numbers/bools so `where ms > 500` and `summarize avg(ms)`
 work without casts.
@@ -97,7 +97,7 @@ The chosen `--input` also applies to `union`/`join`/`lookup` file sources.
 
 ## Context (surrounding rows)
 
-Find matches, then see what happened around them — like `grep -C`, but line- or
+Find matches, then see what happened around them, like `grep -C`, but line- or
 time-based. Your query selects **anchor** rows; klog then pulls their neighbors
 from the original log. Matches are marked with `>` in a leading `_m` column, and
 distinct incidents are separated by `--`.
@@ -122,7 +122,7 @@ klog -T 30s 'where ms > 5000' app.log -o ndjson | klog 'project ts, level, servi
 
 Context needs a **row-preserving** query (`where`, `sort`, `take`, `top`,
 `sample`). Queries that collapse or reshape rows (`summarize`, `project`) can't
-be anchored back to the log — use the `-o ndjson | klog '...'` trick above to
+be anchored back to the log; use the `-o ndjson | klog '...'` trick above to
 shape the output afterwards.
 
 ## Tabular operators
@@ -238,8 +238,9 @@ into bars or a line plot (Unicode, scaled to your terminal width).
 | Chart | Rendering |
 |-------|-----------|
 | `render barchart` | horizontal Unicode bars with values |
-| `render columnchart` | vertical bars with an indexed legend |
+| `render columnchart` | vertical bars with each value shown on top and an indexed legend |
 | `render piechart` | ASCII circle split into slices, with a `%` legend |
+| `render histogram` | buckets a numeric column into bins and bars the counts (`with (bins=N)`) |
 | `render timechart` / `linechart` / `areachart` / `scatterchart` | ASCII line plot, multi-series with a legend |
 
 By default the first column is the x-axis and every numeric column is a series.
@@ -249,10 +250,12 @@ Override via `with (...)`:
 klog 'where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render barchart' app.log
 klog 'summarize n=count() by level | render piechart with (title="Level mix")' app.log
 klog 'extend t=todatetime(ts) | summarize hits=count(), errors=countif(level=="ERROR") by bin(t,1m) | render timechart' app.log
+klog 'where service=="payments" | project ms | render histogram with (title="Latency", bins=12)' app.log
 ```
 
-`with` options: `title`, `xcolumn`, `ycolumns` (`;`-separated), `kind`. Charts
-render in table mode; `-o json/ndjson/tsv` emit the underlying data instead.
+`with` options: `title`, `xcolumn`, `ycolumns` (`;`-separated), `bins` (histogram),
+`kind`. Charts render in table mode; `-o json/ndjson/tsv` emit the underlying data
+instead.
 
 ## Not (yet) supported
 

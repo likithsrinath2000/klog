@@ -54,6 +54,8 @@ titles=(
   "Chart: errors per service (render barchart)"
   "Chart: log level mix (render piechart)"
   "Chart: requests per minute (render timechart)"
+  "Chart: latency histogram (render histogram)"
+  "Chart: errors per service, vertical (render columnchart)"
 )
 
 # Format per entry: "FLAGS>>>QUERY"  (FLAGS may be empty; STDIN as flags = pipe)
@@ -87,6 +89,8 @@ specs=(
   '>>>where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render barchart'
   '>>>where isnotempty(level) | summarize n=count() by level | render piechart with (title="Level mix")'
   '>>>extend t=todatetime(ts) | where isnotempty(ts) | summarize hits=count() by minute=bin(t,1m) | sort by minute asc | render timechart'
+  '>>>where service=="payments" | project ms | render histogram with (title="Payments latency", bins=10)'
+  '>>>where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render columnchart'
 )
 
 run_step() {
