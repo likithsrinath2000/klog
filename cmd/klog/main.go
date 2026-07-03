@@ -14,7 +14,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.7.0"
+var version = "0.8.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -45,6 +45,10 @@ Input is NDJSON by default. Use -i/--input to parse other formats:
   regex (with --pattern '(?P<name>...)'), raw. Lines that don't parse are
   still queryable via _raw and _line.
 
+SQL: use -l sql (or start with SELECT) for a SQL subset that compiles to the
+  same engine: SELECT/DISTINCT, FROM, JOIN..ON, WHERE, GROUP BY, HAVING,
+  ORDER BY, LIMIT, and aggregates COUNT/SUM/AVG/MIN/MAX/COUNT(DISTINCT).
+
 Examples:
   klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
   klog -i logfmt 'where level=="error" | project ts, msg' app.log
@@ -64,6 +68,8 @@ func main() {
 	input := flag.String("input", "json", "input format: json|auto|logfmt|csv|tsv|regex|raw")
 	flag.StringVar(input, "i", "json", "input format (shorthand)")
 	pattern := flag.String("pattern", "", "regex with named groups for --input regex")
+	lang := flag.String("lang", "auto", "query language: kql|sql|auto")
+	flag.StringVar(lang, "l", "auto", "query language (shorthand)")
 	ctxLines := flag.Int("context", 0, "show +/- N surrounding lines around each match")
 	flag.IntVar(ctxLines, "C", 0, "context lines (shorthand)")
 	ctxAfter := flag.Int("after", 0, "show N lines after each match")
@@ -93,6 +99,18 @@ func main() {
 	}
 	query := args[0]
 	files := args[1:]
+
+	// SQL frontend: translate to a klog pipeline (and maybe pick up FROM file).
+	if wantSQL(*lang, query) {
+		pipe, fromFile, err := translateSQL(query)
+		if err != nil {
+			fatal("sql error: %v", err)
+		}
+		query = pipe
+		if fromFile != "" && len(files) == 0 {
+			files = []string{fromFile}
+		}
+	}
 
 	// Prepend a time-range filter stage if --from/--to given.
 	if tf, err := timeFilterStage(*timeField, *from, *to); err != nil {
@@ -188,6 +206,19 @@ func max2(a, b int) int {
 	return b
 }
 
+// wantSQL decides whether to treat the query as SQL, honoring --lang and
+// auto-detecting a leading SELECT/WITH.
+func wantSQL(lang, query string) bool {
+	switch strings.ToLower(lang) {
+	case "sql":
+		return true
+	case "kql":
+		return false
+	}
+	up := strings.ToUpper(strings.TrimSpace(query))
+	return strings.HasPrefix(up, "SELECT ") || up == "SELECT" || strings.HasPrefix(up, "SELECT\t")
+}
+
 // timeFilterStage builds a `where` stage for --from/--to, or "" if neither set.
 func timeFilterStage(field, from, to string) (string, error) {
 	if from == "" && to == "" {
@@ -263,6 +294,7 @@ func splitArgs(argv []string) (flags, positional []string) {
 		"-o": true, "--output": true,
 		"--from": true, "--to": true, "--time-field": true, "--color": true,
 		"-i": true, "--input": true, "--pattern": true,
+		"-l": true, "--lang": true,
 		"-C": true, "--context": true, "-A": true, "--after": true,
 		"-B": true, "--before": true, "-T": true, "--context-time": true,
 	}

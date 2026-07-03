@@ -56,6 +56,8 @@ titles=(
   "Chart: requests per minute (render timechart)"
   "Chart: latency histogram (render histogram)"
   "Chart: errors per service, vertical (render columnchart)"
+  "SQL: error rate and p-latency per service (GROUP BY/HAVING)"
+  "SQL: JOIN a dimension file and roll up by team"
 )
 
 # Format per entry: "FLAGS>>>QUERY"  (FLAGS may be empty; STDIN as flags = pipe)
@@ -91,6 +93,8 @@ specs=(
   '>>>extend t=todatetime(ts) | where isnotempty(ts) | summarize hits=count() by minute=bin(t,1m) | sort by minute asc | render timechart'
   '>>>where service=="payments" | project ms | render histogram with (title="Payments latency", bins=10)'
   '>>>where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render columnchart'
+  ">>>SELECT service, COUNT(*) AS n, ROUND(AVG(ms),1) AS avg_ms FROM logs WHERE level = 'ERROR' GROUP BY service HAVING COUNT(*) > 100 ORDER BY n DESC"
+  ">>>SELECT team, COUNT(*) AS errors FROM logs JOIN 'sample/services.log' ON service = service WHERE level = 'ERROR' GROUP BY team ORDER BY errors DESC"
 )
 
 run_step() {

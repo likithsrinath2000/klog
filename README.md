@@ -5,8 +5,8 @@
 [![Go](https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white)](go.mod)
 
 **A KQL-lite query engine for JSON/NDJSON and plain-text logs.** Write [Kusto/KQL](https://learn.microsoft.com/azure/data-explorer/kusto/query/)-style
-pipelines against local log files instead of gluing together `jq`, `grep`, `sort`
-and `awk`. Single static Go binary, zero dependencies.
+pipelines (or a familiar SQL subset) against local log files instead of gluing
+together `jq`, `grep`, `sort` and `awk`. Single static Go binary, zero dependencies.
 
 ```bash
 klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
@@ -43,6 +43,7 @@ after the query and files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output` | `table` | output format: `table`, `json`, `ndjson`, `tsv` |
+| `-l`, `--lang` | `auto` | query language: `kql`, `sql`, `auto` (detects a leading `SELECT`) |
 | `-i`, `--input` | `json` | input format: `json`, `auto`, `logfmt`, `csv`, `tsv`, `regex`, `raw` |
 | `--pattern` | | regex with named groups for `--input regex` |
 | `--from` | | keep rows with time-field `>=` this bound |
@@ -98,6 +99,41 @@ klog -i auto 'summarize count() by level' mixed.log
 ```
 
 The chosen `--input` also applies to `union`/`join`/`lookup` file sources.
+
+## SQL
+
+If you prefer SQL, use `-l sql` (or just start the query with `SELECT`, which is
+auto-detected). klog translates a common SQL subset into the same pipeline
+engine, so all input formats, charts and output modes still apply.
+
+```bash
+klog "SELECT service, COUNT(*) AS n, ROUND(AVG(ms),1) AS avg_ms
+      FROM logs
+      WHERE level = 'ERROR'
+      GROUP BY service
+      HAVING COUNT(*) > 50
+      ORDER BY n DESC
+      LIMIT 10" app.log
+
+# FROM can name the input file, so no positional arg is needed
+klog "SELECT COUNT(*) AS total FROM 'app.log'"
+
+# JOIN a dimension file
+klog "SELECT team, COUNT(*) AS errors
+      FROM logs JOIN 'services.log' ON service = service
+      WHERE level = 'ERROR' GROUP BY team ORDER BY errors DESC" app.log
+```
+
+Supported: `SELECT [DISTINCT]`, `FROM`, `[INNER|LEFT|RIGHT|FULL] JOIN ... ON`,
+`WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` (name or position, `ASC`/`DESC`),
+`LIMIT`. Expressions: `= <> != < > <= >=`, `AND/OR/NOT`, `IN`, `IS [NOT] NULL`,
+`BETWEEN ... AND ...`, `LIKE` (`%`/`_` wildcards), arithmetic, `CAST(x AS type)`,
+aggregates `COUNT(*)`, `COUNT(DISTINCT x)`, `SUM`, `AVG`, `MIN`, `MAX`, and scalar
+functions (`UPPER`, `LOWER`, `LENGTH`, `SUBSTR`, `ROUND`, `COALESCE`, ...).
+
+Not supported: subqueries, CTEs, window functions, `UNION`, `CASE`. `LIKE` is
+case-insensitive for simple patterns (it maps to `contains`/`startswith`). For
+anything beyond the subset, use the KQL pipeline directly.
 
 ## Context (surrounding rows)
 
