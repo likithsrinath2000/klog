@@ -54,8 +54,12 @@ func renderChart(res engine.Result, colorize bool) error {
 	}
 
 	switch spec.Kind {
-	case "bar", "column", "pie":
-		return barChart(bw, res.Rows, xcol, ycols, spec.Kind == "pie")
+	case "bar":
+		return barChart(bw, res.Rows, xcol, ycols)
+	case "column":
+		return columnChart(bw, res.Rows, xcol, ycols)
+	case "pie":
+		return pieChart(bw, res.Rows, xcol, ycols, colorize)
 	case "line", "time", "area", "scatter":
 		return lineChart(bw, res.Rows, xcol, ycols)
 	}
@@ -91,17 +95,18 @@ func numAt(r engine.Record, col string) (float64, bool) {
 	return 0, false
 }
 
-// ---- bar / pie ----
+// ---- bar / column / pie ----
 
 var blocks = []rune("▏▎▍▌▋▊▉█")
 
-func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string, pie bool) error {
-	type bar struct {
-		label string
-		val   float64
-	}
-	var bars []bar
-	total := 0.0
+type labeledVal struct {
+	label string
+	val   float64
+}
+
+// flattenBars turns rows x ycols into (label,value) pairs.
+func flattenBars(rows []engine.Record, xcol string, ycols []string) []labeledVal {
+	var out []labeledVal
 	multi := len(ycols) > 1
 	for _, r := range rows {
 		label := engine.Format(r[xcol])
@@ -114,16 +119,17 @@ func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string
 			if multi {
 				lbl = label + "/" + y
 			}
-			bars = append(bars, bar{lbl, v})
-			if v > 0 {
-				total += v
-			}
+			out = append(out, labeledVal{lbl, v})
 		}
 	}
+	return out
+}
+
+func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string) error {
+	bars := flattenBars(rows, xcol, ycols)
 	if len(bars) == 0 {
 		return fmt.Errorf("no data")
 	}
-
 	maxVal, labelW, valW := 0.0, 0, 0
 	for _, b := range bars {
 		if b.val > maxVal {
@@ -143,21 +149,15 @@ func barChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string
 		maxVal = 1
 	}
 	barArea := termWidth() - labelW - valW - 6
-	if pie {
-		barArea -= 7
+	if barArea > 70 {
+		barArea = 70
 	}
 	if barArea < 10 {
 		barArea = 10
 	}
-
 	for _, b := range bars {
-		label := truncate(b.label, labelW)
-		bar := scaledBar(b.val, maxVal, barArea)
-		line := fmt.Sprintf("%-*s │ %s %*s", labelW, label, bar, valW, fmtNum(b.val))
-		if pie && total > 0 {
-			line += fmt.Sprintf("  %5.1f%%", 100*b.val/total)
-		}
-		fmt.Fprintln(w, line)
+		fmt.Fprintf(w, "%-*s │ %s %*s\n",
+			labelW, truncate(b.label, labelW), scaledBar(b.val, maxVal, barArea), valW, fmtNum(b.val))
 	}
 	return nil
 }
@@ -177,6 +177,138 @@ func scaledBar(val, maxVal float64, area int) string {
 		b.WriteRune(blocks[rem-1])
 	}
 	return b.String()
+}
+
+// columnChart draws vertical bars with an indexed legend below.
+func columnChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string) error {
+	bars := flattenBars(rows, xcol, ycols)
+	if len(bars) == 0 {
+		return fmt.Errorf("no data")
+	}
+	maxVal := 0.0
+	for _, b := range bars {
+		if b.val > maxVal {
+			maxVal = b.val
+		}
+	}
+	if maxVal <= 0 {
+		maxVal = 1
+	}
+	const height = 12
+	const cw = 3 // column cell width ("██ ")
+	// cap columns to fit width
+	maxCols := (termWidth() - 8) / cw
+	if maxCols < 1 {
+		maxCols = 1
+	}
+	if len(bars) > maxCols {
+		bars = bars[:maxCols]
+	}
+	axW := len(fmtNum(maxVal))
+	for lvl := height; lvl >= 1; lvl-- {
+		var lbl string
+		if lvl == height {
+			lbl = fmtNum(maxVal)
+		}
+		fmt.Fprintf(w, "%*s ┤", axW, lbl)
+		for _, b := range bars {
+			h := int(math.Round(b.val / maxVal * float64(height)))
+			if h >= lvl {
+				w.WriteString("██ ")
+			} else {
+				w.WriteString("   ")
+			}
+		}
+		w.WriteByte('\n')
+	}
+	fmt.Fprintf(w, "%*s └", axW, "0")
+	fmt.Fprint(w, strings.Repeat("─", len(bars)*cw))
+	w.WriteByte('\n')
+	// index row
+	fmt.Fprintf(w, "%*s  ", axW, "")
+	for i := range bars {
+		fmt.Fprintf(w, "%-3d", (i+1)%100)
+	}
+	w.WriteByte('\n')
+	// legend
+	for i, b := range bars {
+		fmt.Fprintf(w, "  %d) %s = %s\n", i+1, b.label, fmtNum(b.val))
+	}
+	return nil
+}
+
+var pieColors = []string{
+	"\x1b[41m", "\x1b[42m", "\x1b[44m", "\x1b[45m", "\x1b[46m", "\x1b[43m",
+	"\x1b[101m", "\x1b[102m", "\x1b[104m", "\x1b[105m", "\x1b[106m", "\x1b[103m",
+}
+var pieGlyphs = []rune("#*o+x=@%&$8B")
+
+// pieChart draws an ASCII circle divided into slices.
+func pieChart(w *bufio.Writer, rows []engine.Record, xcol string, ycols []string, colorize bool) error {
+	bars := flattenBars(rows, xcol, ycols)
+	total := 0.0
+	var slices []labeledVal
+	for _, b := range bars {
+		if b.val > 0 {
+			slices = append(slices, b)
+			total += b.val
+		}
+	}
+	if total <= 0 {
+		return fmt.Errorf("no positive values to chart")
+	}
+	// cumulative angle boundaries (radians), starting at top, clockwise
+	bounds := make([]float64, len(slices)+1)
+	acc := 0.0
+	for i, s := range slices {
+		acc += s.val / total
+		bounds[i+1] = acc * 2 * math.Pi
+	}
+	sliceAt := func(ang float64) int {
+		for i := 0; i < len(slices); i++ {
+			if ang >= bounds[i] && ang < bounds[i+1] {
+				return i
+			}
+		}
+		return len(slices) - 1
+	}
+
+	const r = 9
+	for y := -r; y <= r; y++ {
+		var line strings.Builder
+		for x := -r; x <= r; x++ {
+			nx := float64(x)
+			ny := float64(y)
+			dist := math.Hypot(nx, ny)
+			if dist > float64(r) {
+				line.WriteString("  ")
+				continue
+			}
+			// angle from top (12 o'clock), clockwise
+			ang := math.Atan2(nx, -ny)
+			if ang < 0 {
+				ang += 2 * math.Pi
+			}
+			si := sliceAt(ang)
+			if colorize {
+				line.WriteString(pieColors[si%len(pieColors)] + "  " + "\x1b[0m")
+			} else {
+				g := pieGlyphs[si%len(pieGlyphs)]
+				line.WriteRune(g)
+				line.WriteRune(g)
+			}
+		}
+		fmt.Fprintln(w, line.String())
+	}
+	// legend
+	for i, s := range slices {
+		swatch := string(pieGlyphs[i%len(pieGlyphs)]) + string(pieGlyphs[i%len(pieGlyphs)])
+		if colorize {
+			swatch = pieColors[i%len(pieColors)] + "  " + "\x1b[0m"
+		}
+		fmt.Fprintf(w, "%s %s = %s (%.1f%%)\n", swatch, s.label, fmtNum(s.val), 100*s.val/total)
+	}
+	return nil
 }
 
 // ---- line / time ----

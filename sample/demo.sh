@@ -85,7 +85,7 @@ specs=(
   '-C 2>>>where level=="ERROR" and ms > 5000'
   '-T 3s>>>where ms > 5000'
   '>>>where level=="ERROR" | summarize errors=count() by service | sort by errors desc | render barchart'
-  '>>>summarize n=count() by level | render piechart with (title="Level mix")'
+  '>>>where isnotempty(level) | summarize n=count() by level | render piechart with (title="Level mix")'
   '>>>extend t=todatetime(ts) | where isnotempty(ts) | summarize hits=count() by minute=bin(t,1m) | sort by minute asc | render timechart'
 )
 

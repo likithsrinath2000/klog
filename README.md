@@ -237,8 +237,9 @@ into bars or a line plot (Unicode, scaled to your terminal width).
 
 | Chart | Rendering |
 |-------|-----------|
-| `render barchart` / `columnchart` | horizontal Unicode bars with values |
-| `render piechart` | bars annotated with each slice's `%` |
+| `render barchart` | horizontal Unicode bars with values |
+| `render columnchart` | vertical bars with an indexed legend |
+| `render piechart` | ASCII circle split into slices, with a `%` legend |
 | `render timechart` / `linechart` / `areachart` / `scatterchart` | ASCII line plot, multi-series with a legend |
 
 By default the first column is the x-axis and every numeric column is a series.

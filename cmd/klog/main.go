@@ -14,7 +14,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.6.0"
+var version = "0.6.1"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
