@@ -5,6 +5,12 @@ import "time"
 // Format renders a value as a display string using engine coercion rules.
 func Format(v any) string { return toString(v) }
 
+// ParseTime coerces a value (string/time) into a time.Time, reporting success.
+func ParseTime(v any) (time.Time, bool) { return toTime(v) }
+
+// Field resolves a possibly dotted key path against a record.
+func Field(r Record, key string) (any, bool) { return getField(r, key) }
+
 // DisplayValue converts engine-native values (datetime, timespan) into
 // JSON-friendly representations for output.
 func DisplayValue(v any) any {

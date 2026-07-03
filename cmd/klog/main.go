@@ -14,7 +14,7 @@ import (
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -47,15 +47,15 @@ Input is NDJSON by default. Use -i/--input to parse other formats:
 Examples:
   klog 'where level=="ERROR" | summarize n=count() by service | sort by n desc' app.log
   klog -i logfmt 'where level=="error" | project ts, msg' app.log
-  klog -i regex --pattern '(?P<ip>\S+) \S+ \S+ \[(?P<t>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)' access.log
-  klog --from -1h --to now 'summarize count() by service' app.log
+  klog -C 3 'where level=="ERROR"' app.log            # +/- 3 lines around each match
+  klog -T 2m 'where status==500' app.log              # +/- 2 minutes around each match
 
 Flags:
 `
 
 func main() {
-	out := flag.String("o", "table", "output format: table|json|tsv")
-	flag.StringVar(out, "output", "table", "output format: table|json|tsv")
+	out := flag.String("o", "table", "output format: table|json|ndjson|tsv")
+	flag.StringVar(out, "output", "table", "output format: table|json|ndjson|tsv")
 	from := flag.String("from", "", "only rows with time-field >= this (datetime or relative, e.g. -1h)")
 	to := flag.String("to", "", "only rows with time-field < this (datetime or relative, e.g. -15m)")
 	timeField := flag.String("time-field", "ts", "field used by --from/--to")
@@ -63,6 +63,14 @@ func main() {
 	input := flag.String("input", "json", "input format: json|auto|logfmt|csv|tsv|regex|raw")
 	flag.StringVar(input, "i", "json", "input format (shorthand)")
 	pattern := flag.String("pattern", "", "regex with named groups for --input regex")
+	ctxLines := flag.Int("context", 0, "show +/- N surrounding lines around each match")
+	flag.IntVar(ctxLines, "C", 0, "context lines (shorthand)")
+	ctxAfter := flag.Int("after", 0, "show N lines after each match")
+	flag.IntVar(ctxAfter, "A", 0, "lines after (shorthand)")
+	ctxBefore := flag.Int("before", 0, "show N lines before each match")
+	flag.IntVar(ctxBefore, "B", 0, "lines before (shorthand)")
+	ctxTime := flag.String("context-time", "", "show +/- this time window around each match, e.g. 2m")
+	flag.StringVar(ctxTime, "T", "", "context time window (shorthand)")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, version)
@@ -107,9 +115,35 @@ func main() {
 		fatal("query error: %v", err)
 	}
 
+	// Assemble context options (grep-style surrounding rows).
+	ctx := contextOpts{
+		before:    max2(*ctxLines, *ctxBefore),
+		after:     max2(*ctxLines, *ctxAfter),
+		timeField: *timeField,
+	}
+	if *ctxTime != "" {
+		d, err := parseContextDuration(*ctxTime)
+		if err != nil {
+			fatal("%v", err)
+		}
+		ctx.dur = d
+	}
+	ctx.active = ctx.before > 0 || ctx.after > 0 || ctx.dur > 0
+
 	rows, err := readRows(files)
 	if err != nil {
 		fatal("%v", err)
+	}
+
+	// Tag rows with ingestion order and snapshot before the pipeline (which may
+	// reorder rows in place), so we can map matches back to the original log.
+	var orig []engine.Record
+	if ctx.active {
+		for i := range rows {
+			rows[i][idxKey] = float64(i)
+		}
+		orig = make([]engine.Record, len(rows))
+		copy(orig, rows)
 	}
 
 	res, err := pipe.Run(rows)
@@ -118,9 +152,31 @@ func main() {
 	}
 
 	colorize := shouldColor(*color, os.Stdout)
+
+	if ctx.active {
+		cres, groups, err := applyContext(orig, res, ctx)
+		if err != nil {
+			fatal("%v", err)
+		}
+		if *out == "table" {
+			if err := renderContextTable(cres, groups, colorize); err != nil {
+				fatal("%v", err)
+			}
+			return
+		}
+		res = cres
+	}
+
 	if err := render(os.Stdout, res, *out, colorize); err != nil {
 		fatal("%v", err)
 	}
+}
+
+func max2(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // timeFilterStage builds a `where` stage for --from/--to, or "" if neither set.
@@ -198,6 +254,8 @@ func splitArgs(argv []string) (flags, positional []string) {
 		"-o": true, "--output": true,
 		"--from": true, "--to": true, "--time-field": true, "--color": true,
 		"-i": true, "--input": true, "--pattern": true,
+		"-C": true, "--context": true, "-A": true, "--after": true,
+		"-B": true, "--before": true, "-T": true, "--context-time": true,
 	}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -295,6 +353,16 @@ func render(w io.Writer, res engine.Result, format string, colorize bool) error 
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		return enc.Encode(displayRows(res.Rows))
+	case "ndjson", "jsonl":
+		bw := bufio.NewWriter(w)
+		defer bw.Flush()
+		enc := json.NewEncoder(bw)
+		for _, r := range displayRows(res.Rows) {
+			if err := enc.Encode(r); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "tsv":
 		return renderDelim(w, res, "\t")
 	case "table":

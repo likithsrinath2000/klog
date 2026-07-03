@@ -31,14 +31,14 @@ cat app.log | klog '<query>'
 
 Input is NDJSON (one JSON object per line). Blank lines are skipped; lines that
 aren't valid JSON are still queryable via `_line` (number) and `_raw` (text).
-Output: `-o table` (default), `-o json`, `-o tsv`. Flags may appear before or
+Output: `-o table` (default), `-o json`, `-o ndjson`, `-o tsv`. Flags may appear before or
 after the query and files.
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-o`, `--output` | `table` | output format: `table`, `json`, `tsv` |
+| `-o`, `--output` | `table` | output format: `table`, `json`, `ndjson`, `tsv` |
 | `-i`, `--input` | `json` | input format: `json`, `auto`, `logfmt`, `csv`, `tsv`, `regex`, `raw` |
 | `--pattern` | | regex with named groups for `--input regex` |
 | `--from` | | keep rows with time-field `>=` this bound |
@@ -94,6 +94,36 @@ klog -i auto 'summarize count() by level' mixed.log
 ```
 
 The chosen `--input` also applies to `union`/`join`/`lookup` file sources.
+
+## Context (surrounding rows)
+
+Find matches, then see what happened around them — like `grep -C`, but line- or
+time-based. Your query selects **anchor** rows; klog then pulls their neighbors
+from the original log. Matches are marked with `>` in a leading `_m` column, and
+distinct incidents are separated by `--`.
+
+| Flag | Meaning |
+|------|---------|
+| `-C`, `--context N` | ± N lines around each match |
+| `-A`, `--after N` | N lines after |
+| `-B`, `--before N` | N lines before |
+| `-T`, `--context-time D` | ± time window (`30s`, `2m`, `1h`) using `--time-field` |
+
+```bash
+# 3 lines either side of every ERROR
+klog -C 3 'where level=="ERROR"' app.log
+
+# everything within 2 minutes of each 500
+klog -T 2m 'where status==500' app.log
+
+# narrow the columns: emit ndjson, then project with a second klog
+klog -T 30s 'where ms > 5000' app.log -o ndjson | klog 'project ts, level, service, ms, _m'
+```
+
+Context needs a **row-preserving** query (`where`, `sort`, `take`, `top`,
+`sample`). Queries that collapse or reshape rows (`summarize`, `project`) can't
+be anchored back to the log — use the `-o ndjson | klog '...'` trick above to
+shape the output afterwards.
 
 ## Tabular operators
 

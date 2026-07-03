@@ -49,6 +49,8 @@ titles=(
   "CSV input (-i csv)"
   "regex input: nginx access log (-i regex --pattern ...)"
   "auto input: mixed JSON + logfmt + text (-i auto)"
+  "Context: +/- 2 lines around slowest ERROR (grep -C style)"
+  "Context: +/- 3s time window around slowest request"
 )
 
 # Format per entry: "FLAGS>>>QUERY"  (FLAGS may be empty; STDIN as flags = pipe)
@@ -77,6 +79,8 @@ specs=(
   '-i csv>>>summarize errs=countif(level=="ERROR"), maxms=max(ms) by service | sort by maxms desc>>>sample/app.csv'
   '-i regex --pattern (?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<t>[^]]+)\]\s+"(?P<method>\S+)\s+(?P<path>\S+)[^"]*"\s+(?P<status>\d+)\s+(?P<bytes>\d+)>>>summarize hits=count(), errs=countif(status>=500), bytes=sum(bytes) by path | sort by hits desc>>>sample/access.txt'
   '-i auto>>>summarize n=count() by level>>>sample/mixed.log.txt'
+  '-C 2>>>where level=="ERROR" and ms > 5000'
+  '-T 3s>>>where ms > 5000'
 )
 
 run_step() {
