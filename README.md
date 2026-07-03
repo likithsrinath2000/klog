@@ -1,6 +1,10 @@
 # klog
 
-**A KQL-lite query engine for JSON/NDJSON logs.** Write [Kusto/KQL](https://learn.microsoft.com/azure/data-explorer/kusto/query/)-style
+[![CI](https://github.com/likithsrinath2000/klog/actions/workflows/ci.yml/badge.svg)](https://github.com/likithsrinath2000/klog/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white)](go.mod)
+
+**A KQL-lite query engine for JSON/NDJSON and plain-text logs.** Write [Kusto/KQL](https://learn.microsoft.com/azure/data-explorer/kusto/query/)-style
 pipelines against local log files instead of gluing together `jq`, `grep`, `sort`
 and `awk`. Single static Go binary, zero dependencies.
 
