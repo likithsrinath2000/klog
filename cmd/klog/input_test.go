@@ -34,7 +34,7 @@ func TestCoerceScalar(t *testing.T) {
 }
 
 func TestLogfmtParserLine(t *testing.T) {
-	rec, ok := parseLogfmtLine(`level=error service=payments ms=812`, 5)
+	rec, ok := parseLogfmtLine([]byte(`level=error service=payments ms=812`), 5)
 	if !ok {
 		t.Fatal("should emit")
 	}
@@ -48,10 +48,10 @@ func TestLogfmtParserLine(t *testing.T) {
 
 func TestDelimParserCSV(t *testing.T) {
 	p := newDelimParser(',')
-	if _, ok := p("ts,level,ms", 1); ok {
+	if _, ok := p([]byte("ts,level,ms"), 1); ok {
 		t.Fatal("header row should be consumed (ok=false)")
 	}
-	rec, ok := p("2026-07-03,ERROR,812", 2)
+	rec, ok := p([]byte("2026-07-03,ERROR,812"), 2)
 	if !ok {
 		t.Fatal("data row should emit")
 	}
@@ -63,7 +63,7 @@ func TestDelimParserCSV(t *testing.T) {
 func TestRegexParser(t *testing.T) {
 	re := regexp.MustCompile(`(?P<ip>\S+) "(?P<method>\S+) (?P<path>\S+)" (?P<status>\d+)`)
 	p := newRegexParser(re)
-	rec, ok := p(`10.0.0.2 "POST /checkout" 500`, 3)
+	rec, ok := p([]byte(`10.0.0.2 "POST /checkout" 500`), 3)
 	if !ok {
 		t.Fatal("should emit")
 	}
@@ -71,25 +71,26 @@ func TestRegexParser(t *testing.T) {
 		t.Fatalf("regex record: %v", rec)
 	}
 	// non-matching line falls back to _raw
-	rec2, _ := p("garbage line", 4)
+	rec2, _ := p([]byte("garbage line"), 4)
 	if rec2["_raw"] != "garbage line" {
 		t.Fatalf("non-match should keep _raw: %v", rec2)
 	}
 }
 
 func TestAutoParser(t *testing.T) {
+	p := newAutoParser()
 	// JSON
-	rec, _ := parseAutoLine(`{"level":"INFO","ms":40}`, 1)
+	rec, _ := p([]byte(`{"level":"INFO","ms":40}`), 1)
 	if rec["level"] != "INFO" {
 		t.Fatalf("auto json: %v", rec)
 	}
 	// logfmt
-	rec, _ = parseAutoLine(`level=error ms=812`, 2)
+	rec, _ = p([]byte(`level=error ms=812`), 2)
 	if rec["level"] != "error" || rec["ms"] != float64(812) {
 		t.Fatalf("auto logfmt: %v", rec)
 	}
 	// plain text
-	rec, _ = parseAutoLine(`==== restarted ====`, 3)
+	rec, _ = p([]byte(`==== restarted ====`), 3)
 	if rec["_raw"] != "==== restarted ====" {
 		t.Fatalf("auto raw: %v", rec)
 	}

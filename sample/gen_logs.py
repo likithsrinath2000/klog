@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Generate realistic dummy NDJSON logs for klog demos.
+"""Generate realistic dummy NDJSON logs for klog demos and benchmarks.
 
-Usage: python3 sample/gen_logs.py   # writes sample/app.log + sample/services.log
+Usage:
+  python3 sample/gen_logs.py                 # 5000 rows -> sample/app.log
+  python3 sample/gen_logs.py 1000000 big.log # N rows   -> big.log
 """
-import json, random, datetime as dt
+import json, random, sys, datetime as dt
 
 random.seed(42)
+N = int(sys.argv[1]) if len(sys.argv) > 1 else 5000
+OUT = sys.argv[2] if len(sys.argv) > 2 else "sample/app.log"
 services = ["auth","api","payments","search","cache","notifications"]
 teams = {
     "auth":"identity","api":"gateway","payments":"billing",
@@ -26,9 +30,9 @@ def latency(level, svc):
     if level=="WARN":  j *= random.uniform(1.3,2.5)
     return round(base*0.4 + j, 1)
 
-with open("sample/app.log","w") as f:
+with open(OUT,"w") as f:
     t = start
-    for i in range(5000):
+    for i in range(N):
         t = t + dt.timedelta(milliseconds=random.randint(200, 1400))
         svc = random.choice(services)
         lvl = random.choice(levels)
@@ -52,9 +56,11 @@ with open("sample/app.log","w") as f:
     # a couple of non-JSON lines to prove _raw handling
     f.write("==== log rotated ====\n")
 
-# dimension table for join/lookup
-with open("sample/services.log","w") as f:
-    for svc in services:
-        f.write(json.dumps({"service":svc,"team":teams[svc],"tier":tiers[svc],"oncall":f"{teams[svc]}-oncall"})+"\n")
+# dimension table for join/lookup (only for the default sample)
+if OUT == "sample/app.log":
+    with open("sample/services.log","w") as f:
+        for svc in services:
+            f.write(json.dumps({"service":svc,"team":teams[svc],"tier":tiers[svc],"oncall":f"{teams[svc]}-oncall"})+"\n")
 
-print("wrote sample/app.log and sample/services.log")
+print(f"wrote {N} rows to {OUT}")
+

@@ -2,19 +2,22 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 
 	"github.com/likithsrinath2000/klog/internal/engine"
 )
 
-var version = "0.8.0"
+var version = "0.9.0"
 
 const usage = `klog %s - a KQL-lite query engine for JSON/NDJSON logs
 
@@ -78,6 +81,8 @@ func main() {
 	flag.IntVar(ctxBefore, "B", 0, "lines before (shorthand)")
 	ctxTime := flag.String("context-time", "", "show +/- this time window around each match, e.g. 2m")
 	flag.StringVar(ctxTime, "T", "", "context time window (shorthand)")
+	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile to this file")
+	memProfile := flag.String("memprofile", "", "write a heap profile to this file")
 	showVer := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage, version)
@@ -90,6 +95,30 @@ func main() {
 	if *showVer {
 		fmt.Println("klog", version)
 		return
+	}
+
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fatal("cpuprofile: %v", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			fatal("cpuprofile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+	if *memProfile != "" {
+		defer func() {
+			f, err := os.Create(*memProfile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "klog: memprofile: %v\n", err)
+				return
+			}
+			defer f.Close()
+			runtime.GC()
+			pprof.WriteHeapProfile(f)
+		}()
 	}
 
 	args := positional
@@ -297,6 +326,7 @@ func splitArgs(argv []string) (flags, positional []string) {
 		"-l": true, "--lang": true,
 		"-C": true, "--context": true, "-A": true, "--after": true,
 		"-B": true, "--before": true, "-T": true, "--context-time": true,
+		"--cpuprofile": true, "--memprofile": true,
 	}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -319,7 +349,7 @@ func splitArgs(argv []string) (flags, positional []string) {
 
 // parserFactoryFn builds a fresh line parser per input stream. Set in main
 // from the --input/--pattern flags; used by readRows and readFileRows.
-var parserFactoryFn = func() rowParser { return parseJSONLine }
+var parserFactoryFn = func() rowParser { return newJSONLineParser() }
 
 func scanRows(r io.Reader, rows *[]engine.Record) error {
 	parse := parserFactoryFn()
@@ -328,8 +358,8 @@ func scanRows(r io.Reader, rows *[]engine.Record) error {
 	n := 0
 	for sc.Scan() {
 		n++
-		line := strings.TrimRight(sc.Text(), "\r")
-		if strings.TrimSpace(line) == "" {
+		line := bytes.TrimRight(sc.Bytes(), "\r")
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		if rec, ok := parse(line, n); ok {

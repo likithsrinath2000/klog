@@ -303,6 +303,24 @@ Operators tied to the ADX service rather than local files: `make-series`,
 `evaluate <plugin>`, geospatial/ML functions, and cluster/database management.
 Contributions welcome.
 
+## Performance
+
+klog uses a hand-written single-pass JSON parser with key interning, which is
+about 2.6x faster than `encoding/json` and cuts allocations. On a 2 vCPU box it
+processes roughly 210k rows/s (about 58 MB/s) for a group-by over rich JSON.
+
+It loads the whole input into memory, so peak memory scales with row count
+(around 1.6 GB per 1M rich rows). For very large inputs, shrink the input first
+with `--from/--to`, an upstream `grep`, or by splitting the file. See
+[BENCHMARKS.md](BENCHMARKS.md) for numbers, methodology, and the roadmap.
+
+Profile any query with `--cpuprofile`/`--memprofile`:
+
+```bash
+klog --cpuprofile cpu.prof 'summarize n=count() by service' big.log
+go tool pprof -top cpu.prof
+```
+
 ## Develop
 
 ```bash

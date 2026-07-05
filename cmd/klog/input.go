@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -12,8 +12,9 @@ import (
 )
 
 // rowParser converts one input line into a record. The bool reports whether the
-// record should be emitted (header rows and blank lines return false).
-type rowParser func(line string, lineNo int) (engine.Record, bool)
+// record should be emitted (header rows and blank lines return false). The line
+// slice is only valid for the duration of the call.
+type rowParser func(line []byte, lineNo int) (engine.Record, bool)
 
 // newParserFactory returns a factory that builds a fresh parser per input
 // stream (important for stateful formats like CSV that consume a header row).
@@ -21,9 +22,9 @@ func newParserFactory(mode, pattern, delim string) (func() rowParser, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	switch mode {
 	case "", "json":
-		return func() rowParser { return parseJSONLine }, nil
+		return func() rowParser { return newJSONLineParser() }, nil
 	case "auto":
-		return func() rowParser { return parseAutoLine }, nil
+		return func() rowParser { return newAutoParser() }, nil
 	case "logfmt":
 		return func() rowParser { return parseLogfmtLine }, nil
 	case "raw", "text":
@@ -48,41 +49,46 @@ func newParserFactory(mode, pattern, delim string) (func() rowParser, error) {
 	return nil, fmt.Errorf("unknown --input %q (json|auto|logfmt|csv|tsv|regex|raw)", mode)
 }
 
-func rawRecord(line string, n int) engine.Record {
-	return engine.Record{"_line": float64(n), "_raw": line}
+func rawRecord(line []byte, n int) engine.Record {
+	return engine.Record{"_line": float64(n), "_raw": string(line)}
 }
 
-func parseJSONLine(line string, n int) (engine.Record, bool) {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(line), &m); err == nil {
-		return engine.Record(m), true
+func newJSONLineParser() rowParser {
+	jp := newJSONParser()
+	return func(line []byte, n int) (engine.Record, bool) {
+		if m, err := jp.parseObject(line); err == nil {
+			return engine.Record(m), true
+		}
+		return rawRecord(line, n), true
 	}
-	return rawRecord(line, n), true
 }
 
-func parseRawLine(line string, n int) (engine.Record, bool) {
+func parseRawLine(line []byte, n int) (engine.Record, bool) {
 	return rawRecord(line, n), true
 }
 
 var logfmtHint = regexp.MustCompile(`(^|\s)[A-Za-z0-9_.\-]+=`)
 
-func parseAutoLine(line string, n int) (engine.Record, bool) {
-	t := strings.TrimSpace(line)
-	if strings.HasPrefix(t, "{") && strings.HasSuffix(t, "}") {
-		var m map[string]any
-		if err := json.Unmarshal([]byte(t), &m); err == nil {
-			return engine.Record(m), true
+func newAutoParser() rowParser {
+	jp := newJSONParser()
+	return func(line []byte, n int) (engine.Record, bool) {
+		t := bytes.TrimSpace(line)
+		if len(t) > 1 && t[0] == '{' && t[len(t)-1] == '}' {
+			if m, err := jp.parseObject(t); err == nil {
+				return engine.Record(m), true
+			}
 		}
+		if logfmtHint.Match(line) {
+			return parseLogfmtLine(line, n)
+		}
+		return rawRecord(line, n), true
 	}
-	if logfmtHint.MatchString(line) {
-		return parseLogfmtLine(line, n)
-	}
-	return rawRecord(line, n), true
 }
 
-func parseLogfmtLine(line string, n int) (engine.Record, bool) {
-	rec := engine.Record{"_line": float64(n), "_raw": line}
-	for k, v := range parseLogfmt(line) {
+func parseLogfmtLine(line []byte, n int) (engine.Record, bool) {
+	s := string(line)
+	rec := engine.Record{"_line": float64(n), "_raw": s}
+	for k, v := range parseLogfmt(s) {
 		rec[k] = coerceScalar(v)
 	}
 	return rec, true
@@ -143,8 +149,8 @@ func parseLogfmt(s string) map[string]string {
 
 func newDelimParser(comma rune) rowParser {
 	var header []string
-	return func(line string, n int) (engine.Record, bool) {
-		fields, err := splitDelim(line, comma)
+	return func(line []byte, n int) (engine.Record, bool) {
+		fields, err := splitDelim(string(line), comma)
 		if err != nil {
 			return rawRecord(line, n), true
 		}
@@ -174,12 +180,13 @@ func splitDelim(line string, comma rune) ([]string, error) {
 
 func newRegexParser(re *regexp.Regexp) rowParser {
 	names := re.SubexpNames()
-	return func(line string, n int) (engine.Record, bool) {
-		m := re.FindStringSubmatch(line)
+	return func(line []byte, n int) (engine.Record, bool) {
+		s := string(line)
+		m := re.FindStringSubmatch(s)
 		if m == nil {
-			return rawRecord(line, n), true
+			return engine.Record{"_line": float64(n), "_raw": s}, true
 		}
-		rec := engine.Record{"_line": float64(n), "_raw": line}
+		rec := engine.Record{"_line": float64(n), "_raw": s}
 		for i, name := range names {
 			if i == 0 || name == "" {
 				continue
